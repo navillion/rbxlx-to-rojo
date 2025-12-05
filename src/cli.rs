@@ -3,7 +3,7 @@ use rbxlx_to_rojo::{filesystem::FileSystem, process_instructions};
 use std::{
     borrow::Cow,
     fmt, fs,
-    io::{self, BufReader, Write},
+    io::{self, BufReader, Cursor, Write},
     path::PathBuf,
     sync::{Arc, RwLock},
 };
@@ -77,6 +77,44 @@ impl log::Log for WrappedLogger {
     fn flush(&self) {}
 }
 
+fn strip_unknown_xml_tags(input: &str, unknown_tags: &[&str]) -> String {
+    let mut text = input.to_owned();
+
+    for tag in unknown_tags {
+        let open = format!("<{}", tag);
+
+        loop {
+            let start = match text.find(&open) {
+                Some(index) => index,
+                None => break,
+            };
+
+            let gt_offset = match text[start..].find('>') {
+                Some(index) => index,
+                None => break,
+            };
+            let gt = start + gt_offset + 1;
+
+            let is_self_closing = text[start..gt].trim_end().ends_with("/>");
+            if is_self_closing {
+                text.replace_range(start..gt, "");
+                continue;
+            }
+
+            let close_tag = format!("</{}>", tag);
+            let close_offset = match text[gt..].find(&close_tag) {
+                Some(index) => index,
+                None => break,
+            };
+
+            let end = gt + close_offset + close_tag.len();
+            text.replace_range(start..end, "");
+        }
+    }
+
+    text
+}
+
 fn routine() -> Result<(), Problem> {
     let env_logger = env_logger::Builder::new()
         .filter_level(log::LevelFilter::Info)
@@ -117,7 +155,21 @@ fn routine() -> Result<(), Problem> {
         .map(|extension| extension.to_string_lossy())
     {
         Some(Cow::Borrowed("rbxmx")) | Some(Cow::Borrowed("rbxlx")) => {
-            rbx_xml::from_reader_default(file_source).map_err(Problem::XMLDecodeError)
+            match rbx_xml::from_reader_default(file_source) {
+                Ok(tree) => Ok(tree),
+                Err(first_error) => {
+                    info!(
+                        "rbx_xml failed to decode; retrying after stripping unknown XML tags..."
+                    );
+                    let raw_xml = fs::read_to_string(&file_path)
+                        .map_err(|error| Problem::IoError("read the place file", error))?;
+                    let cleaned =
+                        strip_unknown_xml_tags(&raw_xml, &["AcousticAbsorption", "NetAssetRef"]);
+
+                    rbx_xml::from_reader_default(Cursor::new(cleaned))
+                        .map_err(|_| Problem::XMLDecodeError(first_error))
+                }
+            }
         }
         Some(Cow::Borrowed("rbxm")) | Some(Cow::Borrowed("rbxl")) => {
             rbx_binary::from_reader(file_source).map_err(Problem::BinaryDecodeError)
