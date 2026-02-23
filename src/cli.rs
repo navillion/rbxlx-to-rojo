@@ -166,8 +166,20 @@ fn routine() -> Result<(), Problem> {
                     let cleaned =
                         strip_unknown_xml_tags(&raw_xml, &["AcousticAbsorption", "NetAssetRef"]);
 
-                    rbx_xml::from_reader_default(Cursor::new(cleaned))
-                        .map_err(|_| Problem::XMLDecodeError(first_error))
+                    match rbx_xml::from_reader_default(Cursor::new(cleaned)) {
+                        Ok(tree) => Ok(tree),
+                        Err(second_error) => {
+                            log::error!(
+                                "Initial XML decode error: {:?}",
+                                first_error
+                            );
+                            log::error!(
+                                "XML decode error after stripping unknown tags: {:?}",
+                                second_error
+                            );
+                            Err(Problem::XMLDecodeError(first_error))
+                        }
+                    }
                 }
             }
         }
